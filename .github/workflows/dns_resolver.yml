@@ -8,6 +8,8 @@ on:
 jobs:
   resolve-dns:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 添加写入权限
     env:
       DOMAIN_LIST: ${{ vars.DOMAIN_LIST }}
       OUTPUT_DIR: ${{ vars.OUTPUT_DIR || 'ip_records' }}
@@ -15,36 +17,54 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 获取完整历史记录
 
-    - name: Create output directory
-      run: mkdir -p $OUTPUT_DIR
+    - name: Setup environment
+      run: |
+        mkdir -p $OUTPUT_DIR
+        # 创建临时目录用于处理文件
+        temp_dir=$(mktemp -d)
+        echo "TEMP_DIR=$temp_dir" >> $GITHUB_ENV
 
     - name: Resolve domains and generate IP files
       run: |
-        # 清空总IP文件
-        : > $OUTPUT_DIR/all_ips.txt
+        # 创建空的总IP文件
+        : > $TEMP_DIR/all_ips.txt
         
-        for domain in $DOMAIN_LIST; do
+        IFS=' ' read -ra domains <<< "$DOMAIN_LIST"
+        for domain in "${domains[@]}"; do
           # 清理域名格式
           clean_domain=$(echo "$domain" | tr -d '[:space:]')
           
-          # 执行DNS解析 (使用Google DNS)
-          ips=$(dig +short $clean_domain @8.8.8.8 | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+          # 执行DNS解析 (使用多个DNS服务器提高可靠性)
+          ips=$(dig +short $clean_domain @8.8.8.8 @1.1.1.1 | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
           
           # 生成单个域名的IP文件
-          echo "$ips" > "$OUTPUT_DIR/${clean_domain}.txt"
-          
-          # 追加到总IP文件
-          echo "$ips" >> $OUTPUT_DIR/all_ips.txt
+          if [ -n "$ips" ]; then
+            echo "$ips" > "$TEMP_DIR/${clean_domain}.txt"
+            echo "$ips" >> $TEMP_DIR/all_ips.txt
+          else
+            echo "无法解析 $clean_domain" > "$TEMP_DIR/${clean_domain}.txt"
+          fi
         done
 
         # 总IP文件去重排序
-        sort -u $OUTPUT_DIR/all_ips.txt -o $OUTPUT_DIR/all_ips.txt
+        sort -u $TEMP_DIR/all_ips.txt -o $TEMP_DIR/all_ips.txt
 
-    - name: Commit changes
+    - name: Update files
+      run: |
+        # 删除旧文件
+        rm -rf $OUTPUT_DIR/*
+        # 移动新文件
+        mv $TEMP_DIR/* $OUTPUT_DIR/
+        # 清理临时目录
+        rm -rf $TEMP_DIR
+
+    - name: Commit and push changes
       run: |
         git config user.name "GitHub Actions"
         git config user.email "actions@github.com"
         git add $OUTPUT_DIR/
-        git commit -m "Update DNS records: $(date +'%Y-%m-%d %T')"
+        git diff-index --quiet HEAD || git commit -m "Update DNS records: $(date +'%Y-%m-%d %T')"
         git push
