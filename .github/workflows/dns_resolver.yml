@@ -3,7 +3,7 @@ name: DNS Resolver
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 */6 * * *'  # 每6小时运行一次
 
 jobs:
   resolve-dns:
